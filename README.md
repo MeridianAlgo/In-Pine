@@ -45,7 +45,6 @@ This project is licensed under the Mozilla Public License 2.0. See the [LICENSE]
 ## Contact
 
 - **Email**: meridianalgo@gmail.com 
-- **GitHub Issues**: Report bugs or suggest features via [Issues](meridianalgo@gmail.com)
 
 
 ## Acknowledgments
