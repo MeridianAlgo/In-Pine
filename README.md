@@ -6,11 +6,10 @@
 
 UNDER WORKS:
 
-- **Quantum Pulse**: Real-time buy/sell signals using adaptive RSI with ML-optimized thresholds and gradient visuals.
-- **Quantum Trend**: ML-driven moving average selection with trend-based gradient coloring for clear trend identification.
-- **Quantum Insights**: Comprehensive statistics dashboard with toggleable metrics (RSI, trend, MA performance) and adaptive coloring.
-- **Quantum Shadow**: Visualizes overbought/oversold zones with dynamic RSI thresholds and gradient-filled shadows.
-- **Quantum Debug**: Diagnostic tool for monitoring ML model internals (RSI length, centroids, volatility) with debug plots.
+- **Quantum MA**: Real-time buy/sell signals using adaptive RSI with ML-optimized thresholds and gradient visuals.
+- **Quantum RSI**: ML-driven moving average selection with trend-based gradient coloring for clear trend identification.
+- **Quantum Insights**: 
+- **Universal Indicator**:
 
 ## Installation
 
