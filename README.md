@@ -8,8 +8,7 @@ UNDER WORKS:
 
 - **Quantum MA**: Real-time buy/sell signals using adaptive RSI with ML-optimized thresholds and gradient visuals.
 - **Quantum RSI**: ML-driven moving average selection with trend-based gradient coloring for clear trend identification.
-- **Quantum Insights**: 
-- **Universal Indicator**:
+
 
 ## Installation
 
