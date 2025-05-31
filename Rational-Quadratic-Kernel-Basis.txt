@@ -1,0 +1,160 @@
+//@version=5
+indicator("Rational Quadratic Kernel Basis [Q-Meridian]", overlay=true, max_bars_back=400)
+
+// === INPUTS ===
+
+var float amplitude = input.float(1.0, "Amplitude (σ)", minval=0.1, maxval=5.0, step=0.1, tooltip="Controls the signal's magnitude")
+var float length_scale = input.float(8.0, "Length Scale (l)", minval=1.0, maxval=50.0, step=0.5, tooltip="Determines the smoothing distance")
+var float shape_param = input.float(1.0, "Shape Parameter (α)", minval=0.1, maxval=5.0, step=0.1, tooltip="Balances short- and long-scale variations")
+var int lookback = input.int(25, "Lookback Period", minval=5, maxval=100, step=1, tooltip="Number of bars for kernel computation")
+var string source_type = input.string("Price", "Source Type", options=["Price", "Elder Force Index"], tooltip="Choose between raw price or volume-weighted Elder Force Index")
+var float efi_scale = input.float(1.0, "EFI Scaling Factor", minval=0.1, maxval=10.0, step=0.1, group="Rational Quadratic Kernel Parameters", tooltip="Scales Elder Force Index to normalize output")
+
+// RSI Gradient Parameters
+var int rsi_length = input.int(14, "RSI Length", minval=2, maxval=50, step=1, group="RSI Gradient", tooltip="Period for RSI calculation")
+var float rsi_smooth = input.float(3.0, "RSI Smoothing", minval=1.0, maxval=10.0, step=0.5, group="RSI Gradient", tooltip="Smoothing factor for RSI gradient")
+var float gradient_weight = input.float(0.7, "Gradient Weight", minval=0.1, maxval=1.0, step=0.1, group="RSI Gradient", tooltip="Weight of RSI gradient in kernel calculation")
+
+var bool show_table = input.bool(true, "Show Info Table", tooltip="Display a table with key indicator values")
+var string table_pos = input.string("Top-Right", "Table Position", options=["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"])
+var bool show_chart = input.bool(false, "Show Signal Chart", tooltip="Display a chart comparing RQ signal and reference line")
+
+var string ref_type = input.string("SMA", "Reference Line Type", options=["SMA", "Zero Line"], tooltip="Reference for crossover signals")
+var int sma_length = input.int(14, "SMA Length", minval=1, maxval=50, step=1, tooltip="Length for SMA reference line, if selected")
+var bool use_mtf = input.bool(false, "Use Multi-Timeframe", tooltip="Enable MTF analysis")
+var string mtf_timeframe = input.string("60", "MTF Timeframe", options=["15", "30", "60", "240", "D"], tooltip="Higher timeframe for MTF signal")
+
+// === FUNCTIONS ===
+
+// RSI-based gradient calculation
+f_rsi_gradient(float src, int rsi_len, float smooth_factor) =>
+    float rsi_val = ta.rsi(src, rsi_len)
+    float rsi_norm = (rsi_val - 50.0) / 50.0  // Normalize RSI to -1 to 1 range
+    float rsi_smooth_val = ta.ema(rsi_norm, int(smooth_factor))
+    
+    // Calculate RSI momentum (rate of change in RSI)
+    float rsi_momentum = ta.change(rsi_smooth_val, 1)
+    
+    // Combine normalized RSI and momentum for gradient
+    float gradient = rsi_smooth_val + (rsi_momentum * 0.5)
+    
+    // Smooth the final gradient
+    ta.ema(gradient, int(smooth_factor))
+
+// Enhanced Rational Quadratic Kernel with RSI gradient
+f_rq_kernel_rsi(float dist, float amplitude_param, float length_scale_param, float shape_param_param, float gradient_factor) =>
+    float base_dist = dist * dist / (2.0 * shape_param_param * length_scale_param * length_scale_param)
+    
+    // Apply RSI gradient adjustment to the distance calculation
+    float gradient_adjustment = 1.0 + (gradient_factor * 0.5)  // Adjust kernel sensitivity based on RSI gradient
+    float adjusted_dist = base_dist * gradient_adjustment
+    
+    float kernel_value = amplitude_param * amplitude_param * math.pow(1.0 + adjusted_dist, -shape_param_param)
+    kernel_value
+
+// Compute RQ Kernel weighted average with RSI gradient
+f_compute_rq_signal_rsi(float src, int lookback, float amplitude_param, float length_scale_param, float shape_param_param) =>
+    if bar_index < rsi_length  // Need enough bars for RSI calculation
+        src
+    else
+        float sum_weighted = 0.0
+        float sum_weights = 0.0
+        int max_lookback = math.min(lookback, bar_index)
+        
+        for i = 0 to max_lookback - 1
+            float time_dist = float(i)
+            
+            // Get RSI gradient for the historical bar
+            float historical_src = src[i]
+            float rsi_grad = f_rsi_gradient(historical_src, rsi_length, rsi_smooth)
+            
+            // Apply gradient weighting
+            float effective_gradient = rsi_grad * gradient_weight
+            
+            float weight = f_rq_kernel_rsi(time_dist, amplitude_param, length_scale_param, shape_param_param, effective_gradient)
+            float historical_value = historical_src
+            
+            sum_weighted := sum_weighted + weight * historical_value
+            sum_weights := sum_weights + weight
+            
+        sum_weights > 0 ? sum_weighted / sum_weights : src
+
+// === CALCULATIONS ===
+
+// Select source data
+float src = source_type == "Price" ? close : (close - close[1]) * volume * efi_scale
+
+// Calculate RSI gradient for current bar
+float current_rsi_gradient = f_rsi_gradient(src, rsi_length, rsi_smooth)
+
+// Compute RQ signal with RSI gradient (primary and MTF)
+float rq_signal = f_compute_rq_signal_rsi(src, lookback, amplitude, length_scale, shape_param)
+float mtf_signal = use_mtf ? f_compute_rq_signal_rsi(request.security(syminfo.tickerid, mtf_timeframe, src, lookahead=barmerge.lookahead_on), lookback, amplitude, length_scale, shape_param) : na
+
+// Reference line for signals
+float ref_line = ref_type == "SMA" ? ta.sma(src, sma_length) : 0.0
+float mtf_ref_line = use_mtf and ref_type == "SMA" ? request.security(syminfo.tickerid, mtf_timeframe, ta.sma(src, sma_length), lookahead=barmerge.lookahead_on) : 0.0
+
+// Determine bullish/bearish conditions with RSI gradient confirmation
+bool base_bullish = rq_signal > ref_line
+bool rsi_bullish_confirm = current_rsi_gradient > 0.0
+bool is_bullish = base_bullish and rsi_bullish_confirm
+
+bool is_bullish_cross = ta.crossover(rq_signal, ref_line) and current_rsi_gradient > -0.2
+bool is_bearish_cross = ta.crossunder(rq_signal, ref_line) and current_rsi_gradient < 0.2
+bool is_mtf_bullish = use_mtf ? mtf_signal > mtf_ref_line : false
+
+// Enhanced trend strength with RSI gradient
+float base_trend_strength = math.abs(rq_signal - ref_line) / (ta.stdev(src, lookback) + 0.0001)
+float rsi_trend_strength = math.abs(current_rsi_gradient)
+float trend_strength = base_trend_strength * (1.0 + rsi_trend_strength)
+
+// === PLOTTING ===
+
+// Plot RQ signal and reference line
+plot(rq_signal, "RQ Signal", color=color.blue, linewidth=2)
+plot(ref_line, "Reference Line", color=color.gray, linewidth=1, style=plot.style_linebr)
+plot(mtf_signal, "MTF RQ Signal", color=is_mtf_bullish ? color.new(color.blue, 50) : color.new(color.white, 50), linewidth=1, style=plot.style_linebr)
+
+// Plot RSI gradient as background
+bgcolor(current_rsi_gradient > 0 ? color.new(color.blue, 95) : color.new(color.white, 95), title="RSI Gradient Background")
+
+// Signal markers
+plotshape(is_bullish_cross, title="Bullish Cross", location=location.belowbar, style=shape.triangleup, size=size.small, color=color.blue)
+plotshape(is_bearish_cross, title="Bearish Cross", location=location.abovebar, style=shape.triangledown, size=size.small, color=color.white)
+
+// === TABLE DISPLAY ===
+if show_table
+    var table info_table = table.new(
+         position=table_pos == "Top-Right" ? position.top_right : 
+                  table_pos == "Top-Left" ? position.top_left : 
+                  table_pos == "Bottom-Right" ? position.bottom_right : position.bottom_left,
+         columns=2,
+         rows=7,
+         border_width=1,
+         border_color=color.gray,
+         frame_width=1,
+         frame_color=color.gray
+     )
+    
+    // Populate table
+    table.cell(info_table, 0, 0, "Parameter", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 0, "Value", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 1, "RQ Signal", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 1, str.tostring(rq_signal, "#.##"), bgcolor=color.black, text_color=is_bullish ? color.blue : color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 2, "RSI Gradient", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 2, str.tostring(current_rsi_gradient, "#.###"), bgcolor=color.black, text_color=current_rsi_gradient > 0 ? color.blue : color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 3, "MTF Signal", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 3, use_mtf ? str.tostring(mtf_signal, "#.##") : "N/A", bgcolor=color.black, text_color=is_mtf_bullish ? color.blue : color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 4, "Amplitude (σ)", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 4, str.tostring(amplitude, "#.##"), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 5, "Length Scale (l)", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 5, str.tostring(length_scale, "#.##"), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    
+    table.cell(info_table, 0, 6, "Trend Strength", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 6, str.tostring(trend_strength, "#.##"), bgcolor=color.black, text_color=color.white, text_size=size.small)
