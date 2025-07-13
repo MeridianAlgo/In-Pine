@@ -1,0 +1,352 @@
+//@version=5
+strategy("Quantum MA Strategy", shorttitle="Quantum MA Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, max_bars_back=1100)
+
+// --- Input Groups ---
+group_ma = "MA Settings"
+group_risk = "Risk Management"
+
+// --- MA Inputs ---
+base_length = input.int(20, "Base MA Length", minval=5, maxval=100, group=group_ma)
+eval_period = input.int(20, "Evaluation Period", minval=10, maxval=50, group=group_ma)
+src = input.source(close, "Price Source", group=group_ma)
+alma_offset = input.float(0.85, "ALMA Offset", minval=0, maxval=1, step=0.05, group=group_ma)
+alma_sigma = input.float(6, "ALMA Sigma", minval=1, maxval=10, group=group_ma)
+
+// --- Risk Management Inputs ---
+rsi_length = input.int(14, "RSI Length", minval=1, maxval=50, group=group_risk)
+rsi_oversold = input.int(40, "RSI Oversold Level", minval=1, maxval=50, group=group_risk)
+rsi_overbought = input.int(60, "RSI Overbought Level", minval=50, maxval=99, group=group_risk)
+max_hold_bars = input.int(100, "Max Hold Bars", minval=10, maxval=500, group=group_risk, tooltip="Automatically exit position after this many bars (only if RSI never exceeded entry RSI)")
+rsi_decline_threshold = input.float(2.0, "RSI Decline Threshold", minval=0.5, maxval=10.0, step=0.5, group=group_risk, tooltip="RSI must decline by this amount from peak to trigger exit")
+
+// --- MA Function ---
+ma(src, len, type) =>
+    switch type
+        "SMA" => ta.sma(src, len)
+        "Hull" => ta.hma(src, len)
+        "EMA" => ta.ema(src, len)
+        "WMA" => ta.wma(src, len)
+        "RMA" => ta.rma(src, len)
+        "LINREG" => ta.linreg(src, len, 0)
+        "ALMA" => ta.alma(src, len, alma_offset, alma_sigma)
+        "VWMA" => ta.vwma(src, len)
+        => ta.sma(src, len)
+
+// --- MA Calculations ---
+short_length = math.round(base_length * 0.5)
+mid_length = base_length
+long_length = math.round(base_length * 2)
+
+// Calculate all MAs
+sma_short = ma(src, short_length, "SMA")
+ema_short = ma(src, short_length, "EMA")
+wma_short = ma(src, short_length, "WMA")
+hma_short = ma(src, short_length, "Hull")
+vwma_short = ma(src, short_length, "VWMA")
+alma_short = ma(src, short_length, "ALMA")
+rma_short = ma(src, short_length, "RMA")
+linreg_short = ma(src, short_length, "LINREG")
+
+sma_mid = ma(src, mid_length, "SMA")
+ema_mid = ma(src, mid_length, "EMA")
+wma_mid = ma(src, mid_length, "WMA")
+hma_mid = ma(src, mid_length, "Hull")
+vwma_mid = ma(src, mid_length, "VWMA")
+alma_mid = ma(src, mid_length, "ALMA")
+rma_mid = ma(src, mid_length, "RMA")
+linreg_mid = ma(src, mid_length, "LINREG")
+
+sma_long = ma(src, long_length, "SMA")
+ema_long = ma(src, long_length, "EMA")
+wma_long = ma(src, long_length, "WMA")
+hma_long = ma(src, long_length, "Hull")
+vwma_long = ma(src, long_length, "VWMA")
+alma_long = ma(src, long_length, "ALMA")
+rma_long = ma(src, long_length, "RMA")
+linreg_long = ma(src, long_length, "LINREG")
+
+// --- ML Scoring ---
+score_ma(ma_line, length) =>
+    var float score = 0
+    for i = 1 to eval_period
+        long_signal = ta.crossover(src[i], ma_line[i])
+        short_signal = ta.crossunder(src[i], ma_line[i])
+        profit = long_signal ? src[i-1] - src[i] : short_signal ? src[i] - src[i-1] : 0
+        score := score + profit
+    score / length
+
+// Calculate scores for all MA types
+final_scores = array.new_float(24)
+array.set(final_scores, 0, score_ma(sma_short, short_length))
+array.set(final_scores, 1, score_ma(ema_short, short_length))
+array.set(final_scores, 2, score_ma(wma_short, short_length))
+array.set(final_scores, 3, score_ma(hma_short, short_length))
+array.set(final_scores, 4, score_ma(vwma_short, short_length))
+array.set(final_scores, 5, score_ma(alma_short, short_length))
+array.set(final_scores, 6, score_ma(rma_short, short_length))
+array.set(final_scores, 7, score_ma(linreg_short, short_length))
+
+array.set(final_scores, 8, score_ma(sma_mid, mid_length))
+array.set(final_scores, 9, score_ma(ema_mid, mid_length))
+array.set(final_scores, 10, score_ma(wma_mid, mid_length))
+array.set(final_scores, 11, score_ma(hma_mid, mid_length))
+array.set(final_scores, 12, score_ma(vwma_mid, mid_length))
+array.set(final_scores, 13, score_ma(alma_mid, mid_length))
+array.set(final_scores, 14, score_ma(rma_mid, mid_length))
+array.set(final_scores, 15, score_ma(linreg_mid, mid_length))
+
+array.set(final_scores, 16, score_ma(sma_long, long_length))
+array.set(final_scores, 17, score_ma(ema_long, long_length))
+array.set(final_scores, 18, score_ma(wma_long, long_length))
+array.set(final_scores, 19, score_ma(hma_long, long_length))
+array.set(final_scores, 20, score_ma(vwma_long, long_length))
+array.set(final_scores, 21, score_ma(alma_long, long_length))
+array.set(final_scores, 22, score_ma(rma_long, long_length))
+array.set(final_scores, 23, score_ma(linreg_long, long_length))
+
+// Find best MA
+best_idx = array.indexof(final_scores, array.max(final_scores))
+var string best_ma_type = "EMA"
+var int best_length = mid_length
+var float best_ma = ema_mid
+
+// Assign best MA based on index
+if best_idx == 0
+    best_ma_type := "SMA"
+    best_length := short_length
+    best_ma := sma_short
+else if best_idx == 1
+    best_ma_type := "EMA"
+    best_length := short_length
+    best_ma := ema_short
+else if best_idx == 2
+    best_ma_type := "WMA"
+    best_length := short_length
+    best_ma := wma_short
+else if best_idx == 3
+    best_ma_type := "HMA"
+    best_length := short_length
+    best_ma := hma_short
+else if best_idx == 4
+    best_ma_type := "VWMA"
+    best_length := short_length
+    best_ma := vwma_short
+else if best_idx == 5
+    best_ma_type := "ALMA"
+    best_length := short_length
+    best_ma := alma_short
+else if best_idx == 6
+    best_ma_type := "RMA"
+    best_length := short_length
+    best_ma := rma_short
+else if best_idx == 7
+    best_ma_type := "LINREG"
+    best_length := short_length
+    best_ma := linreg_short
+else if best_idx == 8
+    best_ma_type := "SMA"
+    best_length := mid_length
+    best_ma := sma_mid
+else if best_idx == 9
+    best_ma_type := "EMA"
+    best_length := mid_length
+    best_ma := ema_mid
+else if best_idx == 10
+    best_ma_type := "WMA"
+    best_length := mid_length
+    best_ma := wma_mid
+else if best_idx == 11
+    best_ma_type := "HMA"
+    best_length := mid_length
+    best_ma := hma_mid
+else if best_idx == 12
+    best_ma_type := "VWMA"
+    best_length := mid_length
+    best_ma := vwma_mid
+else if best_idx == 13
+    best_ma_type := "ALMA"
+    best_length := mid_length
+    best_ma := alma_mid
+else if best_idx == 14
+    best_ma_type := "RMA"
+    best_length := mid_length
+    best_ma := rma_mid
+else if best_idx == 15
+    best_ma_type := "LINREG"
+    best_length := mid_length
+    best_ma := linreg_mid
+else if best_idx == 16
+    best_ma_type := "SMA"
+    best_length := long_length
+    best_ma := sma_long
+else if best_idx == 17
+    best_ma_type := "EMA"
+    best_length := long_length
+    best_ma := ema_long
+else if best_idx == 18
+    best_ma_type := "WMA"
+    best_length := long_length
+    best_ma := wma_long
+else if best_idx == 19
+    best_ma_type := "HMA"
+    best_length := long_length
+    best_ma := hma_long
+else if best_idx == 20
+    best_ma_type := "VWMA"
+    best_length := long_length
+    best_ma := vwma_long
+else if best_idx == 21
+    best_ma_type := "ALMA"
+    best_length := long_length
+    best_ma := alma_long
+else if best_idx == 22
+    best_ma_type := "RMA"
+    best_length := long_length
+    best_ma := rma_long
+else if best_idx == 23
+    best_ma_type := "LINREG"
+    best_length := long_length
+    best_ma := linreg_long
+
+// --- Buy/Sell Signals ---
+buy_signal = ta.crossover(src, best_ma)
+sell_signal = ta.crossunder(src, best_ma)
+
+// --- RSI Calculation ---
+rsi = ta.rsi(src, rsi_length)
+
+// --- Timeframe Detection ---
+get_timeframe_minutes() =>
+    if timeframe.period == "1"
+        1
+    else if timeframe.period == "3"
+        3
+    else if timeframe.period == "5"
+        5
+    else if timeframe.period == "15"
+        15
+    else if timeframe.period == "30"
+        30
+    else if timeframe.period == "45"
+        45
+    else if timeframe.period == "60" or timeframe.period == "1H"
+        60
+    else if timeframe.period == "120" or timeframe.period == "2H"
+        120
+    else if timeframe.period == "240" or timeframe.period == "4H"
+        240
+    else if timeframe.period == "1D" or timeframe.period == "D"
+        1440
+    else if timeframe.period == "1W" or timeframe.period == "W"
+        10080
+    else if timeframe.period == "1M" or timeframe.period == "M"
+        43200
+    else
+        // Fallback - try to parse as number
+        str.tonumber(timeframe.period) != na ? str.tonumber(timeframe.period) : 60
+
+timeframe_minutes = get_timeframe_minutes()
+is_hourly_or_above = timeframe_minutes >= 60
+
+// --- Trade State Management ---
+var bool in_long_position = false
+var float entry_price = 0.0
+var float entry_rsi = 0.0
+var float peak_rsi = 0.0
+var int entry_bar = 0
+var int last_exit_bar = -10
+var int wait_bars = 10
+var bool rsi_exceeded_entry = false
+
+// Update position states
+if strategy.position_size > 0 and not in_long_position
+    in_long_position := true
+    entry_price := close
+    entry_rsi := rsi
+    peak_rsi := rsi
+    entry_bar := bar_index
+    rsi_exceeded_entry := false
+else if strategy.position_size == 0 and in_long_position
+    // Clear cache when position ends
+    in_long_position := false
+    last_exit_bar := bar_index
+    entry_price := 0.0
+    entry_rsi := 0.0
+    peak_rsi := 0.0
+    rsi_exceeded_entry := false
+
+// Track peak RSI during position and if RSI exceeded entry level
+if in_long_position
+    peak_rsi := math.max(peak_rsi, rsi)
+    if rsi > entry_rsi
+        rsi_exceeded_entry := true
+
+// Function to detect RSI declining from peak
+is_rsi_declining_from_peak() =>
+    // RSI has declined by threshold from peak and price is profitable
+    rsi < (peak_rsi - rsi_decline_threshold) and close >= entry_price * 1.005
+
+// --- Plot MA Line ---
+plot(best_ma, "Optimal MA", color=color.blue, linewidth=2)
+
+// --- Strategy Logic ---
+can_enter = bar_index >= last_exit_bar + wait_bars
+
+// Long Entry - Only when RSI is below 50
+if buy_signal and strategy.position_size == 0 and can_enter and rsi < 50
+    strategy.entry("Long", strategy.long)
+    label.new(bar_index, high, "Buy @ " + str.tostring(close) + " (RSI: " + str.tostring(math.round(rsi, 1)) + ")", color=color.green, style=label.style_label_down, textcolor=color.white)
+
+// Long Exit Logic - FIXED RULES
+if in_long_position and bar_index > entry_bar
+    
+    // Calculate price threshold (0.5% above entry)
+    price_threshold = entry_price * 1.005
+    
+    // Calculate bars held
+    bars_held = bar_index - entry_bar
+    
+    // PRIMARY EXIT - RSI EXCEEDS ENTRY RSI (Immediate sell)
+    if rsi > entry_rsi
+        strategy.close("Long", comment="Long Exit - RSI Above Entry")
+        label.new(bar_index, high, "Exit Long @ " + str.tostring(close) + " (RSI: " + str.tostring(math.round(rsi, 1)) + " > Entry: " + str.tostring(math.round(entry_rsi, 1)) + ")", color=color.green, style=label.style_label_down, textcolor=color.white)
+    
+    // SECONDARY EXIT - RSI DECLINE FROM PEAK (Same priority as RSI above entry)
+    else if is_rsi_declining_from_peak()
+        strategy.close("Long", comment="Long Exit - RSI Decline from Peak")
+        label.new(bar_index, high, "Exit Long @ " + str.tostring(close) + " (Peak RSI: " + str.tostring(math.round(peak_rsi, 1)) + " → " + str.tostring(math.round(rsi, 1)) + ")", color=color.yellow, style=label.style_label_down, textcolor=color.white)
+    
+    // LAST RESORT EXIT - TIME LIMIT (Only if RSI never exceeded entry)
+    else if bars_held >= max_hold_bars
+        strategy.close("Long", comment="Long Exit - Time Limit")
+        label.new(bar_index, high, "Exit Long @ " + str.tostring(close) + " (Time Limit - " + str.tostring(max_hold_bars) + " bars)", color=color.red, style=label.style_label_down, textcolor=color.white)
+
+// --- Signal Visualization ---
+plotshape(buy_signal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(sell_signal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size=size.small)
+
+// --- Debug Info ---
+var table debug_table = table.new(position.top_right, 2, 11, bgcolor=color.white, border_width=1)
+if barstate.islast
+    table.cell(debug_table, 0, 0, "Timeframe", text_color=color.black, bgcolor=color.gray)
+    table.cell(debug_table, 1, 0, timeframe.period, text_color=color.black, bgcolor=color.gray)
+    table.cell(debug_table, 0, 1, "Minutes", text_color=color.black)
+    table.cell(debug_table, 1, 1, str.tostring(timeframe_minutes), text_color=color.black)
+    table.cell(debug_table, 0, 2, "In Position", text_color=color.black)
+    table.cell(debug_table, 1, 2, str.tostring(in_long_position), text_color=color.black)
+    table.cell(debug_table, 0, 3, "Entry RSI", text_color=color.black)
+    table.cell(debug_table, 1, 3, in_long_position ? str.tostring(math.round(entry_rsi, 1)) : "N/A", text_color=color.black)
+    table.cell(debug_table, 0, 4, "Peak RSI", text_color=color.black)
+    table.cell(debug_table, 1, 4, in_long_position ? str.tostring(math.round(peak_rsi, 1)) : "N/A", text_color=color.black)
+    table.cell(debug_table, 0, 5, "Current RSI", text_color=color.black)
+    table.cell(debug_table, 1, 5, str.tostring(math.round(rsi, 1)), text_color=color.black)
+    table.cell(debug_table, 0, 6, "RSI Exceeded Entry", text_color=color.black)
+    table.cell(debug_table, 1, 6, in_long_position ? str.tostring(rsi_exceeded_entry) : "N/A", text_color=color.black)
+    table.cell(debug_table, 0, 7, "Max Hold Bars", text_color=color.black)
+    table.cell(debug_table, 1, 7, str.tostring(max_hold_bars), text_color=color.black)
+    table.cell(debug_table, 0, 8, "Wait Bars", text_color=color.black)
+    table.cell(debug_table, 1, 8, str.tostring(wait_bars), text_color=color.black)
+    table.cell(debug_table, 0, 9, "RSI Decline Threshold", text_color=color.black)
+    table.cell(debug_table, 1, 9, str.tostring(rsi_decline_threshold), text_color=color.black)
+    table.cell(debug_table, 0, 10, "Exit Logic", text_color=color.black)
+    table.cell(debug_table, 1, 10, "1. RSI > Entry (immediate) 2. Peak decline 3. Time limit", text_color=color.black)
