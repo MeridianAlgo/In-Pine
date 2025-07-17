@@ -1,0 +1,265 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Meridian_Algo
+
+//@version=5
+strategy("Quantum RSI Strategy [Long Only]", shorttitle="Quantum RSI Long Only", overlay=false, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+
+// --- Input Groups ---
+group_rsi = "📊 RSI Settings"
+group_threshold = "🔧 Threshold Settings"
+group_strategy = "⚡ Strategy Settings"
+group_risk = "🛡️ Risk Management"
+group_visual = "🎨 Visual Settings"
+group_table = "📊 Table Settings"
+group_fees = "💰 Fee Settings"
+
+// --- RSI Inputs ---
+minLength = input.int(2, "Minimum RSI Length", minval=1, maxval=30, group=group_rsi, tooltip="Minimum length for adaptive RSI calculation.")
+maxLength = input.int(60, "Maximum RSI Length", minval=5, maxval=60, group=group_rsi, tooltip="Maximum length for adaptive RSI calculation.")
+dmiPeriod = input.int(14, "DMI Period", minval=1, group=group_rsi, tooltip="Period for DMI calculation to determine volatility.")
+adxWeight = input.float(0.6, "ADX Weight", minval=0, maxval=1, step=0.1, group=group_rsi, tooltip="Weight of ADX in volatility score.")
+diWeight = input.float(0.4, "DI Change Weight", minval=0, maxval=1, step=0.1, group=group_rsi, tooltip="Weight of DI change in volatility score.")
+useAdjustmentMultiplier = input.bool(true, "Use Timeframe Adjustment", group=group_rsi, tooltip="Adjust RSI length based on timeframe.")
+useAdaptiveLength = input.bool(true, "Use Adaptive RSI Length", group=group_rsi, tooltip="Use adaptive RSI length based on volatility.")
+fixedRsiLength = input.int(14, "Fixed RSI Length", minval=1, maxval=60, group=group_rsi, tooltip="Fixed RSI length if adaptive length is disabled.")
+
+// --- Threshold Inputs ---
+thresholdPeriod = input.int(100, "Threshold Calculation Period", minval=10, group=group_threshold, tooltip="Period for calculating adaptive thresholds.")
+thresholdPercentile = input.float(10, "Percentile for Thresholds", minval=1, maxval=49, group=group_threshold, tooltip="Percentile for determining overbought/oversold levels.")
+smoothPeriod = input.int(5, "Threshold Smoothing Period", minval=1, group=group_threshold, tooltip="Smoothing period for adaptive thresholds.")
+useAdaptiveThresholds = input.bool(true, "Use Adaptive Thresholds", group=group_threshold, tooltip="Use adaptive overbought/oversold thresholds.")
+fixedOverbought = input.float(70, "Fixed Overbought Level", minval=50, maxval=100, group=group_threshold, tooltip="Fixed overbought level if adaptive thresholds are disabled.")
+fixedOversold = input.float(30, "Fixed Oversold Level", minval=0, maxval=50, group=group_threshold, tooltip="Fixed oversold level if adaptive thresholds are disabled.")
+
+// --- Strategy Inputs ---
+enableLongTrades = input.bool(true, "Enable Long Trades", group=group_strategy, tooltip="Allow long position entries.")
+exitOnOpposite = input.bool(true, "Exit on Opposite Signal", group=group_strategy, tooltip="Close position when opposite signal occurs.")
+requireConfirmation = input.bool(true, "Require Signal Confirmation", group=group_strategy, tooltip="Require RSI to cross back towards midline before entry.")
+confirmationBars = input.int(2, "Confirmation Bars", minval=1, maxval=10, group=group_strategy, tooltip="Number of bars to confirm signal before entry.")
+minVolatility = input.float(0.1, "Minimum Volatility for Entry", minval=0, maxval=1, step=0.1, group=group_strategy, tooltip="Minimum volatility score required for trade entry.")
+
+// --- Risk Management Inputs ---
+useStopLoss = input.bool(true, "Use Stop Loss", group=group_risk, tooltip="Enable stop loss orders.")
+stopLossPercent = input.float(2.0, "Stop Loss %", minval=0.1, maxval=10, step=0.1, group=group_risk, tooltip="Stop loss percentage from entry price.")
+useTakeProfit = input.bool(true, "Use Take Profit", group=group_risk, tooltip="Enable take profit orders.")
+takeProfitPercent = input.float(4.0, "Take Profit %", minval=0.1, maxval=20, step=0.1, group=group_risk, tooltip="Take profit percentage from entry price.")
+useTrailingStop = input.bool(false, "Use Trailing Stop", group=group_risk, tooltip="Enable trailing stop loss.")
+trailingStopPercent = input.float(1.5, "Trailing Stop %", minval=0.1, maxval=10, step=0.1, group=group_risk, tooltip="Trailing stop percentage.")
+maxPositionSize = input.float(100, "Max Position Size %", minval=1, maxval=100, step=1, group=group_risk, tooltip="Maximum position size as percentage of equity.")
+
+// --- Visual Inputs ---
+showSignals = input.bool(true, "Show Entry/Exit Signals", group=group_visual, tooltip="Display buy/sell signals on RSI chart.")
+showThresholds = input.bool(true, "Show Adaptive Thresholds", group=group_visual, tooltip="Display adaptive overbought/oversold thresholds.")
+showMidline = input.bool(true, "Show Midline", group=group_visual, tooltip="Display dynamic midline.")
+showFillZones = input.bool(true, "Show Fill Zones", group=group_visual, tooltip="Fill overbought/oversold zones.")
+rsiLineWidth = input.int(2, "RSI Line Width", minval=1, maxval=5, group=group_visual, tooltip="Width of the RSI line.")
+
+// --- Table Settings ---
+table_position = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=group_table)
+table_size = input.string("Normal", "Table Size", options=["Small", "Normal", "Large"], group=group_table)
+show_table = input.bool(true, "Show Strategy Table", group=group_table)
+
+// --- Fee Settings ---
+makerFeePercent = input.float(0.1, "Maker Fee %", minval=0, maxval=1, step=0.1, group=group_fees, tooltip="Maker fee percentage.")
+takerFeePercent = input.float(0.2, "Taker Fee %", minval=0, maxval=1, step=0.1, group=group_fees, tooltip="Taker fee percentage.")
+
+// --- DMI and Volatility Calculations ---
+[diplus, diminus, adx] = ta.dmi(dmiPeriod, dmiPeriod)
+diplus := na(diplus) ? 0 : diplus
+diminus := na(diminus) ? 0 : diminus
+adx := na(adx) ? 0 : adx
+
+dmiStrength = math.abs(diplus - diminus) / (diplus + diminus + 0.000001)
+adxNorm = adx / 50
+dmiDelta = ta.change(dmiStrength, 1)
+dmiDelta := na(dmiDelta) ? 0 : dmiDelta
+dmiVolatility = ta.sma(math.abs(dmiDelta), dmiPeriod) * 10
+dmiVolatility := na(dmiVolatility) ? 0 : dmiVolatility
+
+volatilityScore = (adxNorm * adxWeight) + (dmiVolatility * diWeight)
+volatilityScore := na(volatilityScore) ? 0 : volatilityScore
+
+// --- Timeframe Adjustment ---
+tfAdjustment = 1.0
+if useAdjustmentMultiplier
+    if timeframe.isintraday
+        if timeframe.isminutes
+            mins = timeframe.multiplier
+            if mins <= 5
+                tfAdjustment := 1.2
+            else if mins <= 15
+                tfAdjustment := 1.1
+            else if mins <= 60
+                tfAdjustment := 1.0
+            else
+                tfAdjustment := 0.9
+        else
+            tfAdjustment := 1.3
+    else
+        if timeframe.isdaily
+            tfAdjustment := 0.8
+        else if timeframe.isweekly
+            tfAdjustment := 0.7
+        else if timeframe.ismonthly
+            tfAdjustment := 0.6
+        else
+            tfAdjustment := 0.75
+
+// --- Adaptive RSI Length ---
+volatilityAdjustment = 1 - math.min(volatilityScore, 1)
+rawLength = minLength + ((maxLength - minLength) * volatilityAdjustment)
+adaptiveLength = math.round(rawLength * tfAdjustment)
+lengthToUse = useAdaptiveLength ? math.max(math.min(math.round(na(adaptiveLength) ? minLength : adaptiveLength), maxLength), minLength) : fixedRsiLength
+
+// --- RSI Calculation ---
+upMove = ta.change(close)
+downMove = -upMove
+upMove := upMove > 0 ? upMove : 0
+downMove := downMove > 0 ? downMove : 0
+avgUp = 0.0
+avgDown = 0.0
+firstAvgUp = ta.sma(upMove, lengthToUse)
+firstAvgDown = ta.sma(downMove, lengthToUse)
+avgUp := na(avgUp[1]) ? firstAvgUp : (avgUp[1] * (lengthToUse - 1) + upMove) / lengthToUse
+avgDown := na(avgDown[1]) ? firstAvgDown : (avgDown[1] * (lengthToUse - 1) + downMove) / lengthToUse
+rs = avgUp / (avgDown + 0.000001)
+adaptiveRsi = 100 - (100 / (1 + rs))
+
+// --- Adaptive Thresholds ---
+var rsiHistory = array.new_float(0)
+if bar_index > 0
+    array.push(rsiHistory, adaptiveRsi[1])
+    if array.size(rsiHistory) > thresholdPeriod
+        array.shift(rsiHistory)
+oversoldRaw = array.size(rsiHistory) > 0 ? array.percentile_nearest_rank(rsiHistory, thresholdPercentile) : 30
+overboughtRaw = array.size(rsiHistory) > 0 ? array.percentile_nearest_rank(rsiHistory, 100 - thresholdPercentile) : 70
+oversoldThreshold = useAdaptiveThresholds ? ta.sma(oversoldRaw, smoothPeriod) : fixedOversold
+overboughtThreshold = useAdaptiveThresholds ? ta.sma(overboughtRaw, smoothPeriod) : fixedOverbought
+
+midlineLevel = (overboughtThreshold + oversoldThreshold) / 2
+
+// --- Signal Generation ---
+oversoldSignal = adaptiveRsi < oversoldThreshold
+overboughtSignal = adaptiveRsi > overboughtThreshold
+
+var float entryRsi = 0.0
+exitLongSignal = strategy.position_size > 0 and adaptiveRsi > entryRsi
+
+var int longConfirmCount = 0
+if oversoldSignal and not overboughtSignal and volatilityScore >= minVolatility
+    longConfirmCount := requireConfirmation ? longConfirmCount + 1 : confirmationBars
+else
+    longConfirmCount := 0
+
+longEntry = longConfirmCount >= confirmationBars and enableLongTrades and not overboughtSignal and adaptiveRsi < oversoldThreshold
+
+// --- Strategy Logic ---
+var float entryPrice = 0.0
+var float stopLossPrice = 0.0
+var float takeProfitPrice = 0.0
+
+if longEntry and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    entryPrice := close
+    entryRsi := adaptiveRsi
+    if useStopLoss
+        stopLossPrice := entryPrice * (1 - stopLossPercent / 100)
+    if useTakeProfit
+        takeProfitPrice := entryPrice * (1 + takeProfitPercent / 100)
+
+// Exit conditions
+if strategy.position_size > 0
+    if exitOnOpposite and exitLongSignal
+        pl = (close - entryPrice) * strategy.position_size
+        feeCost = (entryPrice * strategy.position_size * makerFeePercent / 100) + (close * strategy.position_size * takerFeePercent / 100)
+        netPl = pl - feeCost
+        strategy.close("Long", comment="RSI Exit")
+        label.new(bar_index, high, "P/L: " + str.tostring(netPl, "#.##") + " USD", color=color.yellow, textcolor=color.black)
+    if useStopLoss and close <= stopLossPrice
+        pl = (stopLossPrice - entryPrice) * strategy.position_size
+        feeCost = (entryPrice * strategy.position_size * makerFeePercent / 100) + (stopLossPrice * strategy.position_size * takerFeePercent / 100)
+        netPl = pl - feeCost
+        strategy.close("Long", comment="Stop Loss")
+        label.new(bar_index, high, "P/L: " + str.tostring(netPl, "#.##") + " USD", color=color.red, textcolor=color.white)
+    if useTakeProfit and close >= takeProfitPrice
+        pl = (takeProfitPrice - entryPrice) * strategy.position_size
+        feeCost = (entryPrice * strategy.position_size * makerFeePercent / 100) + (takeProfitPrice * strategy.position_size * takerFeePercent / 100)
+        netPl = pl - feeCost
+        strategy.close("Long", comment="Take Profit")
+        label.new(bar_index, high, "P/L: " + str.tostring(netPl, "#.##") + " USD", color=color.green, textcolor=color.white)
+
+// Trailing stop logic
+if useTrailingStop and strategy.position_size > 0
+    trailStop = close * (1 - trailingStopPercent / 100)
+    strategy.exit("Long", stop=trailStop, trail_offset=trailingStopPercent)
+
+// --- Visual Elements ---
+rsiColor = adaptiveRsi < midlineLevel ? color.from_gradient(adaptiveRsi, oversoldThreshold, midlineLevel, color.blue, color.blue) : adaptiveRsi > midlineLevel ? color.from_gradient(adaptiveRsi, midlineLevel, overboughtThreshold, color.blue, color.purple) : color.blue
+
+plot(adaptiveRsi, "Adaptive RSI", color=rsiColor, linewidth=rsiLineWidth, display=display.all)
+plot(showThresholds ? overboughtThreshold : na, "Overbought", color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1)
+plot(showThresholds ? oversoldThreshold : na, "Oversold", color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+plot(showMidline ? midlineLevel : na, "Midline", color=color.new(color.gray, 50), style=plot.style_line, linewidth=1)
+
+hline(100, "Upper Bound", color=color.new(color.gray, 80), linestyle=hline.style_dashed)
+hline(0, "Lower Bound", color=color.new(color.gray, 80), linestyle=hline.style_dashed)
+
+fill(plot(overboughtThreshold), plot(100), color=color.new(color.red, 90), title="Overbought Zone")
+fill(plot(0), plot(oversoldThreshold), color=color.new(color.green, 90), title="Oversold Zone")
+
+plotshape(showSignals and longEntry, title="Long Entry", style=shape.labelup, location=location.bottom, color=color.green, textcolor=color.white, size=size.small, text="BUY")
+plotshape(showSignals and strategy.position_size[1] > 0 and strategy.position_size == 0, title="Long Exit", style=shape.xcross, location=location.bottom, color=color.orange, size=size.small)
+
+// --- Strategy Table ---
+if show_table
+    font_size = table_size == "Small" ? size.small : table_size == "Large" ? size.large : size.normal
+    
+    var table_pos = position.top_right
+    if table_position == "Top Left"
+        table_pos := position.top_left
+    else if table_position == "Bottom Right"
+        table_pos := position.bottom_right
+    else if table_position == "Bottom Left"
+        table_pos := position.bottom_left
+
+    var table strategyTable = table.new(table_pos, 2, 9, border_color=color.gray, border_width=1, bgcolor=color.new(color.black, 85))
+
+    totalTrades = strategy.closedtrades
+    winRate = totalTrades > 0 ? (strategy.wintrades / totalTrades) * 100 : 0
+    profitFactor = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0
+    avgWin = strategy.wintrades > 0 ? strategy.grossprofit / strategy.wintrades : 0
+    avgLoss = strategy.losstrades > 0 ? strategy.grossloss / strategy.losstrades : 0
+    maxDD = strategy.max_drawdown
+    currentPos = strategy.position_size > 0 ? "Long" : "Flat"
+
+    table.cell(strategyTable, 0, 0, "⚛ Quantum RSI", text_color=color.white, text_size=font_size, bgcolor=color.new(color.blue, 70))
+    table.cell(strategyTable, 1, 0, "Long Only", text_color=color.white, text_size=font_size, bgcolor=color.new(color.blue, 70))
+    
+    table.cell(strategyTable, 0, 1, "Position", text_color=color.gray, text_size=font_size)
+    posColor = currentPos == "Long" ? color.green : color.gray
+    table.cell(strategyTable, 1, 1, currentPos, text_color=posColor, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 2, "Total Trades", text_color=color.gray, text_size=font_size)
+    table.cell(strategyTable, 1, 2, str.tostring(totalTrades), text_color=color.white, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 3, "Win Rate", text_color=color.gray, text_size=font_size)
+    winColor = winRate > 50 ? color.green : color.red
+    table.cell(strategyTable, 1, 3, str.tostring(winRate, "#.##") + "%", text_color=winColor, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 4, "Profit Factor", text_color=color.gray, text_size=font_size)
+    pfColor = profitFactor > 1 ? color.green : color.red
+    table.cell(strategyTable, 1, 4, str.tostring(profitFactor, "#.##"), text_color=pfColor, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 5, "Net Profit", text_color=color.gray, text_size=font_size)
+    netColor = strategy.netprofit > 0 ? color.green : color.red
+    table.cell(strategyTable, 1, 5, str.tostring(strategy.netprofit, "#.##"), text_color=netColor, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 6, "Max DD", text_color=color.gray, text_size=font_size)
+    table.cell(strategyTable, 1, 6, str.tostring(maxDD, "#.##"), text_color=color.red, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 7, "RSI", text_color=color.gray, text_size=font_size)
+    table.cell(strategyTable, 1, 7, str.tostring(adaptiveRsi, "#.##"), text_color=color.white, text_size=font_size)
+    
+    table.cell(strategyTable, 0, 8, "Volatility", text_color=color.gray, text_size=font_size)
+    volColor = volatilityScore > 0.5 ? color.green : volatilityScore < 0.2 ? color.red : color.yellow
+    table.cell(strategyTable, 1, 8, str.tostring(volatilityScore, "#.##"), text_color=volColor, text_size=font_size)
