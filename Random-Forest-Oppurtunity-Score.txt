@@ -1,6 +1,7 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Meridian_Algo
 // Best to be used with our Quantam MA code!!!
+
 //@version=5
 indicator("Random Forest-Inspired Opportunity Score", overlay=true, max_labels_count=500)
 
