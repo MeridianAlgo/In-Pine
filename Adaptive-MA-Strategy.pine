@@ -1,0 +1,302 @@
+//@version=5
+strategy("MA Strategy - Exit Comparison", overlay=true, max_bars_back=500)
+
+// Input parameters
+baseShortPeriod = input.int(10, "Base Short MA Period", minval=5)
+baseLongPeriod = input.int(30, "Base Long MA Period", minval=15)
+atrPeriod = input.int(14, "ATR Period", minval=1)
+volatilityFactor = input.float(0.5, "Volatility Factor", minval=0.1, step=0.1)
+rsiPeriod = input.int(14, "RSI Period", minval=1)
+maxBars = input.int(50, "Maximum Bars in Position", minval=1)
+
+// Backtest settings
+exitStrategy = input.string("RSI Exit", "Exit Strategy to Use", options=["RSI Exit", "Cross Under Exit", "Compare Both"])
+showComparison = input.bool(true, "Show Comparison Results")
+switchAfterTrades = input.int(50, "Switch to Best Strategy After N Trades", minval=20, maxval=100)
+
+// Calculate ATR for volatility
+atr = ta.atr(atrPeriod)
+
+// Calculate volatility-adjusted MA periods
+volatilityAdjustment = atr / ta.sma(atr, atrPeriod)
+shortPeriod = math.max(5, math.round(baseShortPeriod / (1 + volatilityFactor * volatilityAdjustment)))
+longPeriod = math.max(15, math.round(baseLongPeriod / (1 + volatilityFactor * volatilityAdjustment)))
+
+// Pre-calculate EMAs for a range of periods
+var float[] shortEMAs = array.new_float(11)
+var float[] longEMAs = array.new_float(26)
+
+// Calculate EMAs for short periods (5 to 15)
+array.set(shortEMAs, 0, ta.ema(close, 5))
+array.set(shortEMAs, 1, ta.ema(close, 6))
+array.set(shortEMAs, 2, ta.ema(close, 7))
+array.set(shortEMAs, 3, ta.ema(close, 8))
+array.set(shortEMAs, 4, ta.ema(close, 9))
+array.set(shortEMAs, 5, ta.ema(close, 10))
+array.set(shortEMAs, 6, ta.ema(close, 11))
+array.set(shortEMAs, 7, ta.ema(close, 12))
+array.set(shortEMAs, 8, ta.ema(close, 13))
+array.set(shortEMAs, 9, ta.ema(close, 14))
+array.set(shortEMAs, 10, ta.ema(close, 15))
+
+// Calculate EMAs for long periods (15 to 40)
+array.set(longEMAs, 0, ta.ema(close, 15))
+array.set(longEMAs, 1, ta.ema(close, 16))
+array.set(longEMAs, 2, ta.ema(close, 17))
+array.set(longEMAs, 3, ta.ema(close, 18))
+array.set(longEMAs, 4, ta.ema(close, 19))
+array.set(longEMAs, 5, ta.ema(close, 20))
+array.set(longEMAs, 6, ta.ema(close, 21))
+array.set(longEMAs, 7, ta.ema(close, 22))
+array.set(longEMAs, 8, ta.ema(close, 23))
+array.set(longEMAs, 9, ta.ema(close, 24))
+array.set(longEMAs, 10, ta.ema(close, 25))
+array.set(longEMAs, 11, ta.ema(close, 26))
+array.set(longEMAs, 12, ta.ema(close, 27))
+array.set(longEMAs, 13, ta.ema(close, 28))
+array.set(longEMAs, 14, ta.ema(close, 29))
+array.set(longEMAs, 15, ta.ema(close, 30))
+array.set(longEMAs, 16, ta.ema(close, 31))
+array.set(longEMAs, 17, ta.ema(close, 32))
+array.set(longEMAs, 18, ta.ema(close, 33))
+array.set(longEMAs, 19, ta.ema(close, 34))
+array.set(longEMAs, 20, ta.ema(close, 35))
+array.set(longEMAs, 21, ta.ema(close, 36))
+array.set(longEMAs, 22, ta.ema(close, 37))
+array.set(longEMAs, 23, ta.ema(close, 38))
+array.set(longEMAs, 24, ta.ema(close, 39))
+array.set(longEMAs, 25, ta.ema(close, 40))
+
+// Select the appropriate EMA based on calculated period
+shortEMA = array.get(shortEMAs, math.min(math.max(shortPeriod - 5, 0), 10))
+longEMA = array.get(longEMAs, math.min(math.max(longPeriod - 15, 0), 25))
+
+// Calculate RSI
+rsi = ta.rsi(close, rsiPeriod)
+
+// Track position entry information
+var float entryRSI = na
+var int entryBar = na
+var bool inPosition = false
+
+// Performance tracking variables
+var int totalTrades = 0
+var int rsiExitTrades = 0
+var int crossExitTrades = 0
+var float rsiExitProfit = 0.0
+var float crossExitProfit = 0.0
+var float rsiExitWins = 0
+var float crossExitWins = 0
+var bool hasDecided = false
+var string chosenStrategy = na
+
+// Update position status
+if strategy.position_size != 0 and not inPosition
+    inPosition := true
+    entryBar := bar_index
+
+if strategy.position_size == 0 and inPosition
+    inPosition := false
+    entryRSI := na
+    entryBar := na
+
+// Generate entry signals - only when not in position
+buySignal = ta.crossover(shortEMA, longEMA) and strategy.position_size == 0
+
+// Store entry RSI when buy signal fires
+if buySignal
+    entryRSI := rsi
+
+// Calculate bars since entry
+barsSinceEntry = not na(entryBar) ? bar_index - entryBar : na
+
+// Define exit signals
+// RSI Exit: exit when RSI crosses above entry RSI OR max bars reached
+longRSIExit = strategy.position_size > 0 and not na(entryRSI) and rsi > entryRSI and rsi[1] <= entryRSI
+longTimeExit = strategy.position_size > 0 and not na(barsSinceEntry) and barsSinceEntry >= maxBars
+
+// Cross Under Exit: exit when short EMA crosses under long EMA
+longCrossExit = strategy.position_size > 0 and ta.crossunder(shortEMA, longEMA)
+
+// Combined exit signals based on selected strategy
+rsiExitSignal = longRSIExit or longTimeExit
+crossExitSignal = longCrossExit or longTimeExit
+
+// Determine which strategy to use
+activeStrategy = exitStrategy
+if exitStrategy == "Compare Both"
+    if hasDecided
+        activeStrategy := chosenStrategy
+    else
+        activeStrategy := "RSI Exit"  // Use RSI exit during comparison phase
+
+// Strategy logic based on active strategy
+if activeStrategy == "RSI Exit"
+    if buySignal
+        strategy.entry("Long", strategy.long)
+    if rsiExitSignal
+        exitReason = longRSIExit ? "RSI Exit" : "Time Exit"
+        strategy.close("Long", comment=exitReason)
+else if activeStrategy == "Cross Under Exit"
+    if buySignal
+        strategy.entry("Long", strategy.long)
+    if crossExitSignal
+        exitReason = longCrossExit ? "Cross Exit" : "Time Exit"
+        strategy.close("Long", comment=exitReason)
+
+// Performance tracking for comparison mode
+var float entryPrice = na
+var int entryBarIndex = na
+
+// Track entry price for comparison calculations
+if buySignal and exitStrategy == "Compare Both"
+    entryPrice := close
+    entryBarIndex := bar_index
+
+// Calculate hypothetical profits for both strategies when in comparison mode
+if exitStrategy == "Compare Both" and strategy.position_size == 0 and not na(entryPrice) and not hasDecided
+    totalTrades += 1
+    
+    // Determine which exit would have triggered first
+    rsiExitFirst = false
+    crossExitFirst = false
+    
+    // Look back to see which exit condition was met first
+    for i = 1 to bar_index - entryBarIndex
+        if i <= bar_index - entryBarIndex
+            pastRsiExit = rsi[i] > entryRSI and rsi[i+1] <= entryRSI
+            pastCrossExit = shortEMA[i] < longEMA[i] and shortEMA[i+1] >= longEMA[i+1]
+            pastTimeExit = i >= maxBars
+            
+            if (pastRsiExit or pastTimeExit) and not rsiExitFirst and not crossExitFirst
+                rsiExitFirst := true
+                rsiExitTrades += 1
+                rsiProfit = (close[i] - entryPrice) / entryPrice * 100
+                rsiExitProfit += rsiProfit
+                if rsiProfit > 0
+                    rsiExitWins += 1
+                
+                // Calculate what cross exit would have done
+                crossExitTrades += 1
+                crossProfit = (close[i] - entryPrice) / entryPrice * 100
+                crossExitProfit += crossProfit
+                if crossProfit > 0
+                    crossExitWins += 1
+                break
+                
+            if (pastCrossExit or pastTimeExit) and not crossExitFirst and not rsiExitFirst
+                crossExitFirst := true
+                crossExitTrades += 1
+                crossProfit = (close[i] - entryPrice) / entryPrice * 100
+                crossExitProfit += crossProfit
+                if crossProfit > 0
+                    crossExitWins += 1
+                
+                // Calculate what RSI exit would have done
+                rsiExitTrades += 1
+                rsiProfit = (close[i] - entryPrice) / entryPrice * 100
+                rsiExitProfit += rsiProfit
+                if rsiProfit > 0
+                    rsiExitWins += 1
+                break
+    
+    // Check if we should decide on the best strategy
+    if totalTrades >= switchAfterTrades and not hasDecided
+        avgRsiProfit = rsiExitTrades > 0 ? rsiExitProfit / rsiExitTrades : 0
+        avgCrossProfit = crossExitTrades > 0 ? crossExitProfit / crossExitTrades : 0
+        
+        if avgRsiProfit > avgCrossProfit
+            chosenStrategy := "RSI Exit"
+        else
+            chosenStrategy := "Cross Under Exit"
+        
+        hasDecided := true
+    
+    entryPrice := na
+    entryBarIndex := na
+
+// Plot MAs
+plot(shortEMA, color=color.blue, title="Short EMA", linewidth=2)
+plot(longEMA, color=color.red, title="Long EMA", linewidth=2)
+
+// Plot RSI in separate pane
+rsiPlot = plot(rsi, "RSI", color=color.purple, display=display.pane)
+entryRSIPlot = plot(strategy.position_size != 0 and not na(entryRSI) ? entryRSI : na, "Entry RSI", color=color.yellow, linewidth=2, display=display.pane)
+hline(70, "Overbought", color=color.gray, linestyle=hline.style_dashed)
+hline(50, "Midline", color=color.gray, linestyle=hline.style_dotted)
+hline(30, "Oversold", color=color.gray, linestyle=hline.style_dashed)
+
+// Fill between RSI and Entry RSI
+fill(rsiPlot, entryRSIPlot, color=color.new(color.green, 90), title="RSI vs Entry RSI")
+
+// Plot entry signals
+plotshape(buySignal, title="Buy Signal", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal)
+
+
+
+// Add labels for entry information
+if buySignal
+    label.new(bar_index, low - (high - low) * 0.1, "LONG\nEntry RSI: " + str.tostring(rsi, "#.##"), color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small)
+
+// Results table
+if showComparison and exitStrategy == "Compare Both"
+    var table resultsTable = table.new(position.top_left, 3, 8, bgcolor=color.white, border_width=1)
+    
+    // Headers
+    table.cell(resultsTable, 0, 0, "Strategy", text_color=color.black, text_size=size.small, bgcolor=color.gray)
+    table.cell(resultsTable, 1, 0, "RSI Exit", text_color=color.black, text_size=size.small, bgcolor=color.orange)
+    table.cell(resultsTable, 2, 0, "Cross Exit", text_color=color.black, text_size=size.small, bgcolor=color.red)
+    
+    // Status
+    status = hasDecided ? "DECIDED" : "COMPARING"
+    table.cell(resultsTable, 0, 1, "Status:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 1, status, text_color=hasDecided ? color.green : color.orange, text_size=size.small)
+    table.cell(resultsTable, 2, 1, str.tostring(totalTrades) + "/" + str.tostring(switchAfterTrades), text_color=color.black, text_size=size.small)
+    
+    // Trades
+    table.cell(resultsTable, 0, 2, "Trades:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 2, str.tostring(rsiExitTrades), text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 2, 2, str.tostring(crossExitTrades), text_color=color.black, text_size=size.small)
+    
+    // Win Rate
+    rsiWinRate = rsiExitTrades > 0 ? rsiExitWins / rsiExitTrades * 100 : 0
+    crossWinRate = crossExitTrades > 0 ? crossExitWins / crossExitTrades * 100 : 0
+    table.cell(resultsTable, 0, 3, "Win Rate:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 3, str.tostring(rsiWinRate, "#.#") + "%", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 2, 3, str.tostring(crossWinRate, "#.#") + "%", text_color=color.black, text_size=size.small)
+    
+    // Total Profit
+    table.cell(resultsTable, 0, 4, "Total Profit:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 4, str.tostring(rsiExitProfit, "#.##") + "%", text_color=rsiExitProfit > 0 ? color.green : color.red, text_size=size.small)
+    table.cell(resultsTable, 2, 4, str.tostring(crossExitProfit, "#.##") + "%", text_color=crossExitProfit > 0 ? color.green : color.red, text_size=size.small)
+    
+    // Avg Profit per Trade
+    avgRsiProfit = rsiExitTrades > 0 ? rsiExitProfit / rsiExitTrades : 0
+    avgCrossProfit = crossExitTrades > 0 ? crossExitProfit / crossExitTrades : 0
+    table.cell(resultsTable, 0, 5, "Avg/Trade:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 5, str.tostring(avgRsiProfit, "#.##") + "%", text_color=avgRsiProfit > 0 ? color.green : color.red, text_size=size.small)
+    table.cell(resultsTable, 2, 5, str.tostring(avgCrossProfit, "#.##") + "%", text_color=avgCrossProfit > 0 ? color.green : color.red, text_size=size.small)
+    
+    // Current Winner (during comparison) / Final Winner (after decision)
+    currentWinner = avgRsiProfit > avgCrossProfit ? "RSI Exit" : avgCrossProfit > avgRsiProfit ? "Cross Exit" : "Tie"
+    table.cell(resultsTable, 0, 6, hasDecided ? "CHOSEN:" : "Leading:", text_color=color.black, text_size=size.small)
+    table.cell(resultsTable, 1, 6, (currentWinner == "RSI Exit" or chosenStrategy == "RSI Exit") ? "✓" : "", text_color=color.green, text_size=size.small)
+    table.cell(resultsTable, 2, 6, (currentWinner == "Cross Exit" or chosenStrategy == "Cross Under Exit") ? "✓" : "", text_color=color.green, text_size=size.small)
+    
+    // Active Strategy
+    table.cell(resultsTable, 0, 7, "Active:", text_color=color.black, text_size=size.small)
+    activeStrategyDisplay = hasDecided ? chosenStrategy : "RSI Exit"
+    table.cell(resultsTable, 1, 7, activeStrategyDisplay == "RSI Exit" ? "ACTIVE" : "", text_color=color.blue, text_size=size.small)
+    table.cell(resultsTable, 2, 7, activeStrategyDisplay == "Cross Under Exit" ? "ACTIVE" : "", text_color=color.blue, text_size=size.small)
+
+// Current position info table
+if strategy.position_size > 0
+    var table infoTable = table.new(position.top_right, 2, 4, bgcolor=color.white, border_width=1)
+    table.cell(infoTable, 0, 0, "Position:", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 0, "LONG", text_color=color.green, text_size=size.small)
+    table.cell(infoTable, 0, 1, "Entry RSI:", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(entryRSI, "#.##"), text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 0, 2, "Current RSI:", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(rsi, "#.##"), text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 0, 3, "Bars in Position:", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 3, str.tostring(barsSinceEntry), text_color=color.black, text_size=size.small)
